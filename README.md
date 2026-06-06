@@ -30,6 +30,7 @@ Then scan, report, plan, and move:
 diskcleanup scan D:\Videos --fingerprint-mode seek --interval 20 --workers 4
 diskcleanup report
 diskcleanup plan --output cleanup-plan.json
+diskcleanup evidence-report --plan cleanup-plan.json --output-dir .diskcleanup\evidence
 diskcleanup move --plan cleanup-plan.json --dry-run
 diskcleanup move --plan cleanup-plan.json --apply --quarantine D:\VideoQuarantine
 ```
@@ -37,6 +38,23 @@ diskcleanup move --plan cleanup-plan.json --apply --quarantine D:\VideoQuarantin
 ## Safety model
 
 `move` defaults to dry-run. To change files on disk, pass `--apply`. Moved files are placed under the quarantine directory with a manifest at `.diskcleanup/move-manifest.jsonl`.
+
+## Evidence reports
+
+Before applying a cleanup plan, generate a reviewable evidence report:
+
+```powershell
+diskcleanup evidence-report --plan cleanup-plan.json --db .diskcleanup\cache.sqlite --output-dir .diskcleanup\evidence
+```
+
+The report writes:
+
+- `report.md`: recommendation summary, evidence chain, and sampled frame comparisons.
+- `relations.csv`: one row per overlapping or duplicate relation.
+- `evidence-samples.csv`: selected matching sample timestamps and screenshot status.
+- `screenshots\*.jpg`: side-by-side candidate/keeper frames for visual review.
+
+Screenshot comparisons are enabled by default. Use `--no-screenshots` when the source files are unavailable, already quarantined, or when you only need CSV/Markdown evidence metadata. Use `--max-samples` to control how many frame samples are shown per relation.
 
 ## Matching notes
 

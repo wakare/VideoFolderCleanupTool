@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import __version__
 from .db import connect, get_record, list_profiles, list_records, remove_missing_records, upsert_record
+from .evidence import build_evidence_report
 from .fingerprint import FingerprintError, extract_video_fingerprint, extract_video_fingerprint_seek
 from .media import ProbeError, VIDEO_EXTENSIONS, iter_video_files, probe_video, quick_hash_file, sha256_file
 from .models import VideoRecord
@@ -394,6 +395,35 @@ def move_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def evidence_report_command(args: argparse.Namespace) -> int:
+    summary = build_evidence_report(
+        plan_path=args.plan,
+        db_path=args.db,
+        profile=args.fingerprint_profile,
+        output_dir=args.output_dir,
+        title=args.title,
+        max_samples=args.max_samples,
+        hash_distance=args.hash_distance,
+        screenshots=args.screenshots,
+        screenshot_height=args.screenshot_height,
+        screenshot_timeout=args.screenshot_timeout,
+        include_manual=args.include_manual,
+    )
+    outputs = summary["outputs"]
+    if not isinstance(outputs, dict):
+        raise ValueError("invalid evidence report output summary")
+
+    print(f"Relations: {summary['relations']}")
+    print(f"Evidence samples: {summary['samples']}")
+    print(f"Screenshot comparisons: {summary['screenshot_ok']}")
+    print(f"Markdown report: {outputs['markdown']}")
+    print(f"Relation CSV: {outputs['relations_csv']}")
+    print(f"Evidence CSV: {outputs['evidence_csv']}")
+    if args.screenshots:
+        print(f"Screenshots: {outputs['screenshots_dir']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="diskcleanup")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -454,6 +484,41 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--apply", action="store_true", help="actually move files")
     move.set_defaults(func=move_command)
 
+    evidence = subparsers.add_parser(
+        "evidence-report",
+        help="write a detailed overlap report with evidence samples and screenshot comparisons",
+    )
+    evidence.add_argument("--plan", type=Path, required=True)
+    evidence.add_argument("--db", type=Path, default=DEFAULT_DB)
+    evidence.add_argument("--fingerprint-profile", help="use a specific cached fingerprint profile")
+    evidence.add_argument("--output-dir", type=Path, default=Path(".diskcleanup/evidence-report"))
+    evidence.add_argument("--title", default="Video Overlap Evidence Report")
+    evidence.add_argument("--max-samples", type=positive_int, default=6)
+    evidence.add_argument("--hash-distance", type=int, default=10)
+    evidence.add_argument(
+        "--screenshots",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="generate side-by-side frame screenshots; enabled by default",
+    )
+    evidence.add_argument("--screenshot-height", type=positive_int, default=360)
+    evidence.add_argument("--screenshot-timeout", type=positive_int, default=60)
+    manual_group = evidence.add_mutually_exclusive_group()
+    manual_group.add_argument(
+        "--include-manual",
+        dest="include_manual",
+        action="store_true",
+        default=True,
+        help="include partial overlaps that are marked for manual review; enabled by default",
+    )
+    manual_group.add_argument(
+        "--exclude-manual",
+        dest="include_manual",
+        action="store_false",
+        help="exclude partial overlaps that are marked for manual review",
+    )
+    evidence.set_defaults(func=evidence_report_command)
+
     return parser
 
 
@@ -462,6 +527,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (KeyboardInterrupt, MoveError) as exc:
+    except (KeyboardInterrupt, MoveError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
