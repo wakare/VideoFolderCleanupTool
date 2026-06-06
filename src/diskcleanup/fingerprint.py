@@ -168,3 +168,92 @@ def extract_video_fingerprint_seek(
         detail = "; ".join(failures[:3])
         raise FingerprintError(detail or "seek extraction produced no frames")
     return tuple(hashes)
+
+
+def sampled_timestamps(
+    *,
+    duration_seconds: float,
+    interval_seconds: float,
+    max_frames: int | None = None,
+) -> list[float]:
+    if duration_seconds <= 0:
+        raise FingerprintError("duration_seconds must be positive for seek extraction")
+    if interval_seconds <= 0:
+        raise ValueError("interval_seconds must be positive")
+
+    frame_count = int(duration_seconds // interval_seconds) + 1
+    if max_frames:
+        frame_count = min(frame_count, max_frames)
+    return [index * interval_seconds for index in range(frame_count)]
+
+
+def dhash_from_pyav_frame(frame: object) -> int:
+    small = frame.reformat(width=FRAME_WIDTH, height=FRAME_HEIGHT, format="gray")
+    plane = small.planes[0]
+    raw = bytes(plane)
+    line_size = plane.line_size
+    rows = [
+        raw[row * line_size : row * line_size + FRAME_WIDTH]
+        for row in range(FRAME_HEIGHT)
+    ]
+    return dhash_from_gray_9x8(b"".join(rows))
+
+
+def extract_video_fingerprint_pyav_seek(
+    path: Path,
+    *,
+    duration_seconds: float,
+    interval_seconds: float = 30.0,
+    max_frames: int | None = None,
+    max_decode_frames_per_seek: int = 120,
+) -> tuple[int, ...]:
+    try:
+        import av
+    except ImportError as exc:
+        raise FingerprintError(
+            "PyAV is not installed; install the optional 'pyav' extra or use --fingerprint-mode seek"
+        ) from exc
+    av_error_module = getattr(av, "error", None)
+    av_error = getattr(av, "AVError", None) or getattr(av_error_module, "FFmpegError", Exception)
+
+    timestamps = sampled_timestamps(
+        duration_seconds=duration_seconds,
+        interval_seconds=interval_seconds,
+        max_frames=max_frames,
+    )
+    hashes: list[int] = []
+    failures: list[str] = []
+
+    try:
+        with av.open(str(path)) as container:
+            stream = container.streams.video[0]
+            stream.thread_type = "AUTO"
+            time_base = float(stream.time_base)
+            for timestamp in timestamps:
+                target_pts = int(timestamp / time_base) if time_base else 0
+                try:
+                    container.seek(target_pts, stream=stream, backward=True, any_frame=False)
+                except av_error as exc:
+                    failures.append(f"{timestamp:.3f}s seek failed: {exc}")
+                    continue
+
+                selected = None
+                for frame_index, frame in enumerate(container.decode(stream)):
+                    if frame.time is None or frame.time >= timestamp:
+                        selected = frame
+                        break
+                    if frame_index >= max_decode_frames_per_seek:
+                        break
+                if selected is None:
+                    failures.append(f"{timestamp:.3f}s: no frame")
+                    continue
+                hashes.append(dhash_from_pyav_frame(selected))
+    except av_error as exc:
+        raise FingerprintError(f"PyAV failed to read video: {exc}") from exc
+    except OSError as exc:
+        raise FingerprintError(f"PyAV failed to open video: {exc}") from exc
+
+    if not hashes:
+        detail = "; ".join(failures[:3])
+        raise FingerprintError(detail or "PyAV seek extraction produced no frames")
+    return tuple(hashes)

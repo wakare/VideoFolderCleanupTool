@@ -49,6 +49,13 @@ diskcleanup scan D:\Videos --fingerprint-mode seek --interval 20 --workers 4 --h
 diskcleanup report --candidate-mode indexed
 ```
 
+If PyAV is installed, the optional PyAV seek backend can avoid starting one FFmpeg process per sampled frame:
+
+```powershell
+python -m pip install -e ".[pyav]"
+diskcleanup scan D:\Videos --fingerprint-mode pyav-seek --interval 20 --workers 4 --hash-mode quick
+```
+
 Then rescan only suspicious groups with a smaller interval if needed:
 
 ```powershell
@@ -57,6 +64,15 @@ diskcleanup plan --min-overlap 0.85 --hash-distance 12 --candidate-mode indexed
 ```
 
 Changing `--interval` or `--fingerprint-mode` causes cached fingerprints to be rebuilt for unchanged files.
+
+You can name and inspect fingerprint cache profiles:
+
+```powershell
+diskcleanup scan D:\Videos --fingerprint-mode seek --interval 20 --profile-name coarse20
+diskcleanup scan D:\Videos --fingerprint-mode seek --interval 10 --profile-name fine10
+diskcleanup profiles
+diskcleanup report --fingerprint-profile coarse20
+```
 
 ## Performance strategy
 
