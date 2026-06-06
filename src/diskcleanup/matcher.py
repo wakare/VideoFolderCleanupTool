@@ -138,7 +138,7 @@ def find_visual_matches(
             )
             if similarity >= near_duplicate_similarity:
                 matches.append(Match("near_duplicate", left, right, similarity))
-            continue
+                continue
 
         short, long = (left, right) if len(left.fingerprint) <= len(right.fingerprint) else (right, left)
         score = best_containment(
