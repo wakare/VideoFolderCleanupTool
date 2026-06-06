@@ -21,6 +21,8 @@ class VideoRecord:
     fingerprint: tuple[int, ...]
     fingerprint_interval: float | None
     error: str | None = None
+    quick_hash: str | None = None
+    fingerprint_profile: str | None = None
 
     @property
     def pixel_count(self) -> int:

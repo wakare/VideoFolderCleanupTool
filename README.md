@@ -27,7 +27,7 @@ python -m pip install -e .
 Then scan, report, plan, and move:
 
 ```powershell
-diskcleanup scan D:\Videos
+diskcleanup scan D:\Videos --fingerprint-mode seek --interval 20 --workers 4
 diskcleanup report
 diskcleanup plan --output cleanup-plan.json
 diskcleanup move --plan cleanup-plan.json --dry-run
@@ -40,11 +40,29 @@ diskcleanup move --plan cleanup-plan.json --apply --quarantine D:\VideoQuarantin
 
 ## Matching notes
 
-The default scanner samples one frame every two seconds. This keeps scans fast enough for large folders while still catching common duplicate and containment cases. For short clips or aggressive editing, use a smaller interval:
+The default scanner uses continuous FFmpeg sampling and samples one frame every two seconds. This is accurate but slow for large folders because FFmpeg still has to decode through each video.
+
+For 1000+ video batches, use seek-based coarse sampling first:
 
 ```powershell
-python -m diskcleanup scan D:\Videos --interval 1
-python -m diskcleanup plan --min-overlap 0.85 --hash-distance 12
+diskcleanup scan D:\Videos --fingerprint-mode seek --interval 20 --workers 4 --hash-mode quick
+diskcleanup report --candidate-mode indexed
 ```
 
-Changing `--interval` causes cached fingerprints to be rebuilt for unchanged files.
+Then rescan only suspicious groups with a smaller interval if needed:
+
+```powershell
+diskcleanup scan D:\Videos --fingerprint-mode seek --interval 10 --force
+diskcleanup plan --min-overlap 0.85 --hash-distance 12 --candidate-mode indexed
+```
+
+Changing `--interval` or `--fingerprint-mode` causes cached fingerprints to be rebuilt for unchanged files.
+
+## Performance strategy
+
+The tool prioritizes cheaper checks before expensive visual comparison:
+
+- `quick_hash`: hashes file size plus head/middle/tail chunks. This is the default and is much faster than full-file SHA256.
+- `sha256`: available with `--hash-mode sha256` when exact cryptographic confirmation is required.
+- Indexed candidates: `report` and `plan` default to `--candidate-mode indexed`, which uses shared frame-hash anchors and offset votes to avoid exhaustive pairwise comparison.
+- Exhaustive fallback: use `--candidate-mode exhaustive` when recall matters more than runtime.

@@ -2,7 +2,7 @@ import unittest
 
 from pathlib import Path
 
-from diskcleanup.matcher import aligned_similarity, best_containment, find_visual_matches
+from diskcleanup.matcher import aligned_similarity, best_containment, find_visual_matches, indexed_candidate_pairs
 from diskcleanup.models import VideoRecord
 
 
@@ -56,6 +56,20 @@ class MatcherTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0].kind, "contained_in")
         self.assertEqual(matches[0].offset_seconds, 20)
+
+    def test_indexed_candidate_pairs_uses_anchor_offset_votes(self):
+        first = record("D:/Videos/first.mp4", (10, 20, 30, 40), 40)
+        second = record("D:/Videos/second.mp4", (1, 2, 10, 20, 30, 40, 5), 70)
+        unrelated = record("D:/Videos/unrelated.mp4", (100, 200, 300, 400), 40)
+
+        pairs = indexed_candidate_pairs(
+            [first, second, unrelated],
+            min_anchor_votes=3,
+            anchor_stride=1,
+            max_anchor_bucket=20,
+        )
+
+        self.assertEqual(pairs, {(0, 1)})
 
 
 if __name__ == "__main__":

@@ -38,6 +38,21 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(items[0].victim, short.path)
         self.assertEqual(items[0].keeper, long.path)
 
+    def test_quick_hash_duplicate_moves_lower_ranked_file(self):
+        low = record("D:/Videos/low.mp4", duration=10, width=640, height=360)
+        high = record("D:/Videos/high.mp4", duration=10, width=1920, height=1080)
+        low = low.__class__(**{**low.__dict__, "quick_hash": "abc"})
+        high = high.__class__(**{**high.__dict__, "quick_hash": "abc"})
+
+        from diskcleanup.planner import plan_quick_duplicates
+
+        items = plan_quick_duplicates([low, high], set())
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].victim, low.path)
+        self.assertEqual(items[0].keeper, high.path)
+        self.assertEqual(items[0].reason, "quick_hash_duplicate")
+
     def test_keeper_chains_resolve_to_final_survivor(self):
         short = record("D:/Videos/short.mp4", duration=10)
         copy = record("D:/Videos/short-copy.mp4", duration=10)

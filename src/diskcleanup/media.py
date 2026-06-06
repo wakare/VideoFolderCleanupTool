@@ -51,6 +51,25 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def quick_hash_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    size = path.stat().st_size
+    offsets = {
+        0,
+        max(0, (size // 2) - (chunk_size // 2)),
+        max(0, size - chunk_size),
+    }
+    digest = hashlib.sha256()
+    digest.update(f"quick-v1:size={size}:chunk={chunk_size}".encode("ascii"))
+    with path.open("rb") as file:
+        for offset in sorted(offsets):
+            file.seek(offset)
+            chunk = file.read(min(chunk_size, max(0, size - offset)))
+            digest.update(offset.to_bytes(8, "little", signed=False))
+            digest.update(len(chunk).to_bytes(8, "little", signed=False))
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def parse_ratio(value: str | None) -> float | None:
     if not value or value == "0/0":
         return None
@@ -88,10 +107,16 @@ def probe_video(path: Path, timeout_seconds: int | None = 60) -> dict[str, objec
         "ffprobe",
         "-v",
         "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        (
+            "stream=codec_type,codec_name,width,height,avg_frame_rate,"
+            "r_frame_rate,duration,nb_frames,bit_rate:"
+            "format=duration,size,bit_rate"
+        ),
         "-print_format",
         "json",
-        "-show_format",
-        "-show_streams",
         str(path),
     ]
     try:

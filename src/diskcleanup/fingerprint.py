@@ -101,3 +101,70 @@ def extract_video_fingerprint(
         raise FingerprintError(stderr or f"ffmpeg exited with {completed.returncode}")
 
     return fingerprint_from_raw_frames(completed.stdout)
+
+
+def extract_video_fingerprint_seek(
+    path: Path,
+    *,
+    duration_seconds: float,
+    interval_seconds: float = 30.0,
+    max_frames: int | None = None,
+    timeout_per_frame_seconds: int | None = 15,
+) -> tuple[int, ...]:
+    if duration_seconds <= 0:
+        raise FingerprintError("duration_seconds must be positive for seek extraction")
+    if interval_seconds <= 0:
+        raise ValueError("interval_seconds must be positive")
+
+    frame_count = int(duration_seconds // interval_seconds) + 1
+    if max_frames:
+        frame_count = min(frame_count, max_frames)
+
+    hashes: list[int] = []
+    failures: list[str] = []
+    for index in range(frame_count):
+        timestamp = index * interval_seconds
+        command = [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-ss",
+            f"{timestamp:.3f}",
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-vf",
+            f"scale={FRAME_WIDTH}:{FRAME_HEIGHT}:flags=bilinear,format=gray",
+            "-an",
+            "-sn",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "pipe:1",
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_per_frame_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            failures.append(f"{timestamp:.3f}s timed out")
+            continue
+        except OSError as exc:
+            raise FingerprintError(f"failed to run ffmpeg: {exc}") from exc
+
+        if completed.returncode != 0 or len(completed.stdout) < FRAME_BYTES:
+            stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+            failures.append(f"{timestamp:.3f}s: {stderr or 'no frame'}")
+            continue
+        hashes.append(dhash_from_gray_9x8(completed.stdout[:FRAME_BYTES]))
+
+    if not hashes:
+        detail = "; ".join(failures[:3])
+        raise FingerprintError(detail or "seek extraction produced no frames")
+    return tuple(hashes)

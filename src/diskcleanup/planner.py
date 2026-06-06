@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .models import Match, PlanItem, VideoRecord
-from .matcher import exact_duplicate_groups, find_visual_matches
+from .matcher import exact_duplicate_groups, find_visual_matches, quick_duplicate_groups
 
 
 def keeper_rank(record: VideoRecord) -> tuple[int, float, int, int, str]:
@@ -37,6 +37,28 @@ def plan_exact_duplicates(records: list[VideoRecord]) -> list[PlanItem]:
                     confidence=1.0,
                     overlap_ratio=1.0,
                     details={"sha256": record.sha256, "size": record.size},
+                )
+            )
+    return items
+
+
+def plan_quick_duplicates(records: list[VideoRecord], already_selected: set[str]) -> list[PlanItem]:
+    items: list[PlanItem] = []
+    for group in quick_duplicate_groups(records):
+        keeper = choose_keeper(group)
+        for record in group:
+            if record == keeper or str(record.path) in already_selected:
+                continue
+            already_selected.add(str(record.path))
+            items.append(
+                PlanItem(
+                    action="move",
+                    reason="quick_hash_duplicate",
+                    victim=record.path,
+                    keeper=keeper.path,
+                    confidence=0.999,
+                    overlap_ratio=1.0,
+                    details={"quick_hash": record.quick_hash, "size": record.size},
                 )
             )
     return items
@@ -90,18 +112,27 @@ def build_cleanup_plan(
     partial_overlap: float = 0.45,
     near_duplicate_similarity: float = 0.9,
     hash_distance: int = 10,
+    candidate_mode: str = "indexed",
+    min_anchor_votes: int = 3,
+    anchor_stride: int = 1,
+    max_anchor_bucket: int = 200,
 ) -> tuple[list[PlanItem], list[Match]]:
     exact_items = plan_exact_duplicates(records)
     selected = {str(item.victim) for item in exact_items}
+    quick_items = plan_quick_duplicates(records, selected)
     visual_matches = find_visual_matches(
         records,
         min_overlap=min_overlap,
         partial_overlap=partial_overlap,
         near_duplicate_similarity=near_duplicate_similarity,
         hash_distance=hash_distance,
+        candidate_mode=candidate_mode,
+        min_anchor_votes=min_anchor_votes,
+        anchor_stride=anchor_stride,
+        max_anchor_bucket=max_anchor_bucket,
     )
     visual_items = plan_visual_matches(visual_matches, selected)
-    return normalize_keeper_chains(exact_items + visual_items), visual_matches
+    return normalize_keeper_chains(exact_items + quick_items + visual_items), visual_matches
 
 
 def final_keeper(path: Path, victim_to_keeper: dict[str, Path]) -> Path:

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import sys
 from pathlib import Path
 
 from . import __version__
 from .db import connect, get_record, list_records, remove_missing_records, upsert_record
-from .fingerprint import FingerprintError, extract_video_fingerprint
-from .media import ProbeError, VIDEO_EXTENSIONS, iter_video_files, probe_video, sha256_file
+from .fingerprint import FingerprintError, extract_video_fingerprint, extract_video_fingerprint_seek
+from .media import ProbeError, VIDEO_EXTENSIONS, iter_video_files, probe_video, quick_hash_file, sha256_file
 from .models import VideoRecord
 from .mover import MoveError, load_plan, move_from_plan
 from .planner import build_cleanup_plan, plan_item_to_dict
@@ -20,6 +21,13 @@ DEFAULT_MANIFEST = Path(".diskcleanup/move-manifest.jsonl")
 
 def positive_float(value: str) -> float:
     parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be positive")
     return parsed
@@ -49,21 +57,113 @@ def resolve_roots(values: list[str]) -> list[Path]:
     return [Path(value).expanduser().resolve() for value in values]
 
 
+def fingerprint_profile(args: argparse.Namespace) -> str:
+    max_frames = args.max_frames or 0
+    return (
+        f"dhash64-v1:{args.fingerprint_mode}:"
+        f"interval={args.interval}:max_frames={max_frames}"
+    )
+
+
 def should_rescan(
     existing: VideoRecord | None,
     size: int,
     mtime_ns: int,
     force: bool,
-    interval: float,
+    profile: str,
+    needs_quick_hash: bool,
+    needs_sha256: bool,
 ) -> bool:
     if force or existing is None:
         return True
-    interval_changed = existing.fingerprint_interval != interval
+    profile_changed = existing.fingerprint_profile != profile
+    quick_hash_missing = needs_quick_hash and not existing.quick_hash
+    sha256_missing = needs_sha256 and not existing.sha256
     return (
         existing.size != size
         or existing.mtime_ns != mtime_ns
-        or interval_changed
+        or profile_changed
+        or quick_hash_missing
+        or sha256_missing
         or not existing.has_fingerprint
+    )
+
+
+def select_root(path: Path, roots: list[Path]) -> Path:
+    return next(
+        (candidate for candidate in roots if path == candidate or candidate in path.parents),
+        path.parent,
+    )
+
+
+def scan_one_video(
+    path: Path,
+    root: Path,
+    *,
+    interval: float,
+    max_frames: int,
+    profile: str,
+    hash_mode: str,
+    needs_sha256: bool,
+    probe_timeout: int | None,
+    fingerprint_timeout: int | None,
+    fingerprint_mode: str,
+    seek_timeout: int | None,
+) -> VideoRecord:
+    stat = path.stat()
+    metadata: dict[str, object] = {}
+    fingerprint: tuple[int, ...] = ()
+    quick_hash: str | None = None
+    sha256: str | None = None
+    error: str | None = None
+
+    try:
+        metadata = probe_video(path, timeout_seconds=probe_timeout)
+        if hash_mode != "none":
+            quick_hash = quick_hash_file(path)
+        if needs_sha256:
+            sha256 = sha256_file(path)
+        if fingerprint_mode == "seek":
+            duration = metadata.get("duration")
+            if not isinstance(duration, (int, float)):
+                raise FingerprintError("ffprobe did not return a duration for seek extraction")
+            fingerprint = extract_video_fingerprint_seek(
+                path,
+                duration_seconds=float(duration),
+                interval_seconds=interval,
+                max_frames=max_frames or None,
+                timeout_per_frame_seconds=seek_timeout,
+            )
+        else:
+            fingerprint = extract_video_fingerprint(
+                path,
+                interval_seconds=interval,
+                max_frames=max_frames or None,
+                timeout_seconds=fingerprint_timeout,
+            )
+    except (ProbeError, FingerprintError, OSError) as exc:
+        error = str(exc)
+    except Exception as exc:  # Keep long batch scans moving after one bad file.
+        error = f"{type(exc).__name__}: {exc}"
+
+    return VideoRecord(
+        path=path,
+        root=root,
+        size=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        sha256=sha256,
+        duration=metadata.get("duration") if metadata else None,
+        width=metadata.get("width") if metadata else None,
+        height=metadata.get("height") if metadata else None,
+        codec=metadata.get("codec") if metadata else None,
+        bit_rate=metadata.get("bit_rate") if metadata else None,
+        fps=metadata.get("fps") if metadata else None,
+        frames=metadata.get("frames") if metadata else None,
+        fingerprint=fingerprint,
+        fingerprint_interval=interval,
+        error=error,
+        quick_hash=quick_hash,
+        fingerprint_profile=profile,
     )
 
 
@@ -72,58 +172,63 @@ def scan_command(args: argparse.Namespace) -> int:
     connection = connect(args.db)
     scanned = skipped = failed = 0
     extensions = parse_extensions(args.extensions)
+    profile = fingerprint_profile(args)
+    needs_sha256 = args.hash_mode == "sha256" and not args.skip_sha256
+    needs_quick_hash = args.hash_mode != "none"
+    jobs: list[tuple[Path, Path]] = []
 
     for path in iter_video_files(roots, extensions):
         stat = path.stat()
         existing = get_record(connection, path)
-        root = next((candidate for candidate in roots if path == candidate or candidate in path.parents), path.parent)
-        if not should_rescan(existing, stat.st_size, stat.st_mtime_ns, args.force, args.interval):
+        root = select_root(path, roots)
+        if not should_rescan(
+            existing,
+            stat.st_size,
+            stat.st_mtime_ns,
+            args.force,
+            profile,
+            needs_quick_hash,
+            needs_sha256,
+        ):
             skipped += 1
             continue
+        jobs.append((path, root))
 
-        metadata: dict[str, object] = {}
-        fingerprint: tuple[int, ...] = ()
-        sha256: str | None = None
-        error: str | None = None
-
-        try:
-            metadata = probe_video(path, timeout_seconds=args.probe_timeout)
-            if not args.skip_sha256:
-                sha256 = sha256_file(path)
-            fingerprint = extract_video_fingerprint(
-                path,
-                interval_seconds=args.interval,
-                max_frames=args.max_frames or None,
-                timeout_seconds=args.fingerprint_timeout,
-            )
-        except (ProbeError, FingerprintError, OSError) as exc:
-            error = str(exc)
+    def persist(record: VideoRecord) -> None:
+        nonlocal scanned, failed
+        if record.error:
             failed += 1
-
-        record = VideoRecord(
-            path=path,
-            root=root,
-            size=stat.st_size,
-            mtime_ns=stat.st_mtime_ns,
-            sha256=sha256,
-            duration=metadata.get("duration") if metadata else None,
-            width=metadata.get("width") if metadata else None,
-            height=metadata.get("height") if metadata else None,
-            codec=metadata.get("codec") if metadata else None,
-            bit_rate=metadata.get("bit_rate") if metadata else None,
-            fps=metadata.get("fps") if metadata else None,
-            frames=metadata.get("frames") if metadata else None,
-            fingerprint=fingerprint,
-            fingerprint_interval=args.interval,
-            error=error,
-        )
         upsert_record(connection, record)
         connection.commit()
         scanned += 1
 
         if args.verbose:
-            status = "failed" if error else f"{len(fingerprint)} samples"
-            print(f"{status}: {path}")
+            status = "failed" if record.error else f"{len(record.fingerprint)} samples"
+            print(f"{status}: {record.path}")
+
+    scan_kwargs = {
+        "interval": args.interval,
+        "max_frames": args.max_frames,
+        "profile": profile,
+        "hash_mode": args.hash_mode,
+        "needs_sha256": needs_sha256,
+        "probe_timeout": args.probe_timeout,
+        "fingerprint_timeout": args.fingerprint_timeout,
+        "fingerprint_mode": args.fingerprint_mode,
+        "seek_timeout": args.seek_timeout,
+    }
+
+    if args.workers <= 1:
+        for path, root in jobs:
+            persist(scan_one_video(path, root, **scan_kwargs))
+    else:
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = [
+                executor.submit(scan_one_video, path, root, **scan_kwargs)
+                for path, root in jobs
+            ]
+            for future in as_completed(futures):
+                persist(future.result())
 
     removed = remove_missing_records(connection) if args.prune_missing else 0
     connection.commit()
@@ -153,6 +258,10 @@ def report_command(args: argparse.Namespace) -> int:
         partial_overlap=args.partial_overlap,
         near_duplicate_similarity=args.near_duplicate_similarity,
         hash_distance=args.hash_distance,
+        candidate_mode=args.candidate_mode,
+        min_anchor_votes=args.min_anchor_votes,
+        anchor_stride=args.anchor_stride,
+        max_anchor_bucket=args.max_anchor_bucket,
     )
     failures = [record for record in records if record.error]
     partials = [match for match in matches if match.kind == "partial_overlap"]
@@ -190,6 +299,10 @@ def plan_command(args: argparse.Namespace) -> int:
         partial_overlap=args.partial_overlap,
         near_duplicate_similarity=args.near_duplicate_similarity,
         hash_distance=args.hash_distance,
+        candidate_mode=args.candidate_mode,
+        min_anchor_votes=args.min_anchor_votes,
+        anchor_stride=args.anchor_stride,
+        max_anchor_bucket=args.max_anchor_bucket,
     )
     payload = {
         "version": 1,
@@ -199,6 +312,10 @@ def plan_command(args: argparse.Namespace) -> int:
             "partial_overlap": args.partial_overlap,
             "near_duplicate_similarity": args.near_duplicate_similarity,
             "hash_distance": args.hash_distance,
+            "candidate_mode": args.candidate_mode,
+            "min_anchor_votes": args.min_anchor_votes,
+            "anchor_stride": args.anchor_stride,
+            "max_anchor_bucket": args.max_anchor_bucket,
         },
         "items": [plan_item_to_dict(item) for item in items],
         "manual_review": [
@@ -249,11 +366,15 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--db", type=Path, default=DEFAULT_DB)
     scan.add_argument("--interval", type=positive_float, default=2.0, help="seconds between sampled frames")
     scan.add_argument("--max-frames", type=int, default=0, help="limit sampled frames per file; 0 means unlimited")
+    scan.add_argument("--fingerprint-mode", choices=["interval", "seek"], default="interval")
     scan.add_argument("--extensions", nargs="*", help="video extensions, for example .mp4 .mkv or mp4,mkv")
     scan.add_argument("--force", action="store_true", help="rescan unchanged files")
-    scan.add_argument("--skip-sha256", action="store_true", help="skip full-file hashing")
+    scan.add_argument("--hash-mode", choices=["quick", "sha256", "none"], default="quick")
+    scan.add_argument("--skip-sha256", action="store_true", help="deprecated alias to suppress full SHA256")
+    scan.add_argument("--workers", type=positive_int, default=1, help="number of videos to scan concurrently")
     scan.add_argument("--probe-timeout", type=int, default=60)
     scan.add_argument("--fingerprint-timeout", type=int, default=None)
+    scan.add_argument("--seek-timeout", type=int, default=15, help="timeout per sampled frame in seek mode")
     scan.add_argument("--prune-missing", action="store_true", help="remove missing files from the cache")
     scan.add_argument("--fail-on-error", action="store_true")
     scan.add_argument("--verbose", "-v", action="store_true")
@@ -269,6 +390,10 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--partial-overlap", type=bounded_ratio, default=0.45)
         command.add_argument("--near-duplicate-similarity", type=bounded_ratio, default=0.9)
         command.add_argument("--hash-distance", type=int, default=10)
+        command.add_argument("--candidate-mode", choices=["indexed", "exhaustive"], default="indexed")
+        command.add_argument("--min-anchor-votes", type=int, default=3)
+        command.add_argument("--anchor-stride", type=int, default=1)
+        command.add_argument("--max-anchor-bucket", type=int, default=200)
         if name == "report":
             command.add_argument("--show-errors", action="store_true")
             command.add_argument("--max-partial", type=int, default=20)
