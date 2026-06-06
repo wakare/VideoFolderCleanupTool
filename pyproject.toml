@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "diskcleanup"
-version = "0.4.0"
+version = "0.5.0"
 description = "CLI tool for finding exact, near-duplicate, and overlapping video files."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,13 +12,21 @@ license = "MIT"
 authors = [
   { name = "wakare", email = "wakare_no_kaze@outlook.com" }
 ]
-dependencies = []
+dependencies = [
+  "fastapi",
+  "uvicorn",
+]
 
 [project.optional-dependencies]
 pyav = ["av"]
+gui = [
+  "fastapi",
+  "uvicorn",
+]
 
 [project.scripts]
 diskcleanup = "diskcleanup.cli:main"
+diskcleanup-gui = "diskcleanup.gui.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/diskcleanup"]

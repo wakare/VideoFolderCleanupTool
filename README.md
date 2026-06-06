@@ -18,7 +18,7 @@ The project uses `ffprobe` for metadata and `ffmpeg` for frame extraction. The P
 
 ## Quick start
 
-Install the CLI first:
+Install the tool first:
 
 ```powershell
 python -m pip install -e .
@@ -33,6 +33,28 @@ diskcleanup plan --output cleanup-plan.json
 diskcleanup evidence-report --plan cleanup-plan.json --output-dir .diskcleanup\evidence
 diskcleanup move --plan cleanup-plan.json --dry-run
 diskcleanup move --plan cleanup-plan.json --apply --quarantine D:\VideoQuarantine
+```
+
+## Local GUI
+
+Start the local web UI:
+
+```powershell
+diskcleanup-gui
+```
+
+The GUI opens a browser at `http://127.0.0.1:8765` by default. It provides one local workbench for the full workflow:
+
+- scan one or more folders into a SQLite cache;
+- build a cleanup plan from a selected fingerprint profile;
+- generate evidence reports with side-by-side frame screenshots;
+- preview move candidates and manual-review overlaps;
+- dry-run or apply quarantine moves.
+
+Use `--no-open` if you only want to start the server:
+
+```powershell
+diskcleanup-gui --host 127.0.0.1 --port 8765 --no-open
 ```
 
 ## Safety model

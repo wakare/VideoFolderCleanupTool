@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DiskCleanUp</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>DiskCleanUp</h1>
+        <p>Local video overlap review and quarantine workflow</p>
+      </div>
+      <div class="topbar-status">
+        <span id="serverStatus" class="status-dot"></span>
+        <span id="serverStatusText">Checking</span>
+      </div>
+    </header>
+
+    <div class="shell">
+      <aside class="control-panel">
+        <section class="panel-section">
+          <h2>Workspace</h2>
+          <label>
+            Scan paths
+            <textarea id="scanPaths" rows="4" placeholder="D:\Videos&#10;G:\Download"></textarea>
+          </label>
+          <label>
+            Cache DB
+            <input id="dbPath" value=".diskcleanup/cache.sqlite" />
+          </label>
+          <div class="two-col">
+            <label>
+              Profile
+              <input id="profileName" placeholder="coarse20" />
+            </label>
+            <label>
+              Workers
+              <input id="workers" type="number" min="1" value="4" />
+            </label>
+          </div>
+          <div class="two-col">
+            <label>
+              Mode
+              <select id="fingerprintMode">
+                <option value="seek" selected>seek</option>
+                <option value="pyav-seek">pyav-seek</option>
+                <option value="interval">interval</option>
+              </select>
+            </label>
+            <label>
+              Interval
+              <input id="interval" type="number" min="0.1" step="0.1" value="20" />
+            </label>
+          </div>
+          <div class="two-col">
+            <label>
+              Hash
+              <select id="hashMode">
+                <option value="quick" selected>quick</option>
+                <option value="sha256">sha256</option>
+                <option value="none">none</option>
+              </select>
+            </label>
+            <label>
+              Max frames
+              <input id="maxFrames" type="number" min="0" value="0" />
+            </label>
+          </div>
+          <div class="inline-options">
+            <label><input id="forceScan" type="checkbox" /> Force rescan</label>
+            <label><input id="pruneMissing" type="checkbox" /> Prune missing</label>
+          </div>
+          <button id="scanButton" class="primary">Start Scan</button>
+        </section>
+
+        <section class="panel-section">
+          <h2>Plan</h2>
+          <label>
+            Fingerprint profile
+            <input id="planProfile" placeholder="Use scan result or profile name" />
+          </label>
+          <label>
+            Plan output
+            <input id="planPath" value=".diskcleanup/gui-cleanup-plan.json" />
+          </label>
+          <div class="two-col">
+            <label>
+              Min overlap
+              <input id="minOverlap" type="number" min="0" max="1" step="0.01" value="0.9" />
+            </label>
+            <label>
+              Partial
+              <input id="partialOverlap" type="number" min="0" max="1" step="0.01" value="0.45" />
+            </label>
+          </div>
+          <div class="two-col">
+            <label>
+              Near dup
+              <input id="nearDuplicate" type="number" min="0" max="1" step="0.01" value="0.9" />
+            </label>
+            <label>
+              Hash dist
+              <input id="hashDistance" type="number" min="0" value="10" />
+            </label>
+          </div>
+          <label>
+            Candidate mode
+            <select id="candidateMode">
+              <option value="indexed" selected>indexed</option>
+              <option value="exhaustive">exhaustive</option>
+            </select>
+          </label>
+          <button id="planButton">Build Plan</button>
+        </section>
+
+        <section class="panel-section">
+          <h2>Evidence</h2>
+          <label>
+            Evidence output
+            <input id="evidenceDir" value=".diskcleanup/gui-evidence" />
+          </label>
+          <div class="two-col">
+            <label>
+              Samples
+              <input id="maxSamples" type="number" min="1" value="6" />
+            </label>
+            <label>
+              Image height
+              <input id="screenshotHeight" type="number" min="64" value="360" />
+            </label>
+          </div>
+          <div class="inline-options">
+            <label><input id="screenshots" type="checkbox" checked /> Screenshots</label>
+            <label><input id="includeManual" type="checkbox" checked /> Manual review</label>
+          </div>
+          <button id="evidenceButton">Generate Evidence</button>
+        </section>
+
+        <section class="panel-section">
+          <h2>Quarantine</h2>
+          <label>
+            Quarantine folder
+            <input id="quarantinePath" value=".diskcleanup/quarantine" />
+          </label>
+          <label>
+            Manifest
+            <input id="manifestPath" value=".diskcleanup/move-manifest.jsonl" />
+          </label>
+          <div class="split-actions">
+            <button id="dryRunButton">Dry Run</button>
+            <button id="applyButton" class="danger">Apply Move</button>
+          </div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <nav class="tabs" aria-label="Views">
+          <button class="tab active" data-tab="overview">Overview</button>
+          <button class="tab" data-tab="plan">Plan Results</button>
+          <button class="tab" data-tab="evidence">Evidence</button>
+          <button class="tab" data-tab="jobs">Jobs</button>
+        </nav>
+
+        <section id="overview" class="tab-panel active">
+          <div class="metrics">
+            <div class="metric"><span id="metricJobs">0</span><label>Jobs</label></div>
+            <div class="metric"><span id="metricCandidates">0</span><label>Move candidates</label></div>
+            <div class="metric"><span id="metricManual">0</span><label>Manual review</label></div>
+            <div class="metric"><span id="metricEvidence">0</span><label>Evidence samples</label></div>
+          </div>
+          <section class="output-section">
+            <h2>Active Job</h2>
+            <pre id="activeJob">No active job.</pre>
+          </section>
+          <section class="output-section">
+            <h2>Latest Output</h2>
+            <pre id="latestOutput">No output yet.</pre>
+          </section>
+        </section>
+
+        <section id="plan" class="tab-panel">
+          <div class="toolbar">
+            <button id="reloadPlanButton">Reload Plan</button>
+            <input id="planFilter" placeholder="Filter by path or reason" />
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Reason</th>
+                  <th>Confidence</th>
+                  <th>Offset</th>
+                  <th>Candidate</th>
+                  <th>Recommended keeper</th>
+                </tr>
+              </thead>
+              <tbody id="planRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="evidence" class="tab-panel">
+          <div class="toolbar">
+            <button id="reloadEvidenceButton">Reload Evidence</button>
+            <a id="markdownLink" class="link-button" href="#" target="_blank" rel="noreferrer">Open Markdown</a>
+            <input id="evidenceFilter" placeholder="Filter evidence" />
+          </div>
+          <div id="evidenceGrid" class="evidence-grid"></div>
+        </section>
+
+        <section id="jobs" class="tab-panel">
+          <div id="jobsList" class="jobs-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
