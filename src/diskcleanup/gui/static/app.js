@@ -53,6 +53,18 @@ function setActive(value) {
   $("activeJob").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
+function setProgress(value) {
+  const target = $("activeProgress");
+  target.replaceChildren();
+  if (!value) {
+    target.className = "progress-empty";
+    target.textContent = "No active job.";
+    return;
+  }
+  target.className = "";
+  target.append(progressCard(value));
+}
+
 async function submitScan() {
   const payload = {
     paths: textValue("scanPaths"),
@@ -170,6 +182,7 @@ function renderJobs() {
   $("metricJobs").textContent = state.jobs.length;
   const active = state.jobs.find((job) => job.status === "running" || job.status === "queued");
   setActive(active || "No active job.");
+  setProgress(active || null);
 
   const list = $("jobsList");
   list.replaceChildren();
@@ -186,6 +199,7 @@ function renderJobs() {
     badge.textContent = job.status;
     head.append(title, badge);
 
+    const progressDetails = progressCard(job);
     const progress = document.createElement("pre");
     progress.textContent = JSON.stringify(
       {
@@ -201,10 +215,111 @@ function renderJobs() {
       2,
     );
 
-    item.append(head, progress);
+    item.append(head, progressDetails, progress);
     list.append(item);
   }
   updateMetrics();
+}
+
+function progressCard(job) {
+  const card = document.createElement("div");
+  card.className = "progress-card";
+
+  const progress = job.progress || {};
+  const stats = jobProgressStats(job);
+
+  const header = document.createElement("div");
+  header.className = "progress-header";
+  const title = document.createElement("strong");
+  title.textContent = `${job.kind} ${job.status}`;
+  const percent = document.createElement("span");
+  percent.textContent = stats.percent === null ? progress.phase || "queued" : `${stats.percent.toFixed(1)}%`;
+  header.append(title, percent);
+
+  const bar = document.createElement("div");
+  bar.className = "progress-bar";
+  const fill = document.createElement("div");
+  fill.className = `progress-bar-fill ${job.status}`;
+  fill.style.width = `${stats.percent === null ? 0 : Math.max(0, Math.min(100, stats.percent))}%`;
+  bar.append(fill);
+
+  const grid = document.createElement("div");
+  grid.className = "progress-grid";
+  grid.append(
+    metricLine("Phase", progress.phase || job.status),
+    metricLine("Processed", stats.processedLabel),
+    metricLine("Failed", progress.failed ?? job.result?.failed ?? 0),
+    metricLine("Remaining", stats.remainingLabel),
+    metricLine("Elapsed", stats.elapsedLabel),
+    metricLine("Avg speed", stats.rateLabel),
+    metricLine("ETA", stats.etaLabel),
+    metricLine("Profile", progress.profile || job.result?.profile || "n/a"),
+  );
+
+  const current = document.createElement("div");
+  current.className = "progress-current path-text";
+  current.textContent = progress.current ? `Current: ${progress.current}` : "Current: n/a";
+
+  card.append(header, bar, grid, current);
+  return card;
+}
+
+function jobProgressStats(job) {
+  const progress = job.progress || {};
+  const processed = numeric(progress.scanned ?? progress.processed ?? progress.records ?? progress.total_done);
+  const total = numeric(progress.total);
+  const failed = numeric(progress.failed);
+  const skipped = numeric(progress.skipped);
+  const percent = total > 0 && processed >= 0 ? (processed / total) * 100 : null;
+  const remaining = total > 0 && processed >= 0 ? Math.max(0, total - processed) : null;
+  const started = Date.parse(job.started_at || job.created_at || "");
+  const finished = Date.parse(job.finished_at || "");
+  const end = Number.isNaN(finished) ? Date.now() : finished;
+  const elapsedSeconds = Number.isNaN(started) ? null : Math.max(0, (end - started) / 1000);
+  const rate = elapsedSeconds && processed > 0 ? processed / elapsedSeconds : null;
+  const etaSeconds = rate && remaining !== null ? remaining / rate : null;
+
+  return {
+    percent,
+    processedLabel: total > 0
+      ? `${processed} / ${total}${skipped ? `, skipped ${skipped}` : ""}`
+      : `${processed}${skipped ? `, skipped ${skipped}` : ""}`,
+    remainingLabel: remaining === null ? "n/a" : remaining,
+    elapsedLabel: elapsedSeconds === null ? "n/a" : formatDuration(elapsedSeconds),
+    rateLabel: rate ? `${rate.toFixed(3)} files/s` : "n/a",
+    etaLabel: etaSeconds === null || !Number.isFinite(etaSeconds) ? "n/a" : formatDuration(etaSeconds),
+    failed,
+  };
+}
+
+function numeric(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatDuration(seconds) {
+  const rounded = Math.max(0, Math.round(seconds));
+  const days = Math.floor(rounded / 86400);
+  const hours = Math.floor((rounded % 86400) / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const secs = rounded % 60;
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours || parts.length) parts.push(`${hours}h`);
+  if (minutes || parts.length) parts.push(`${minutes}m`);
+  parts.push(`${secs}s`);
+  return parts.join(" ");
+}
+
+function metricLine(label, value) {
+  const item = document.createElement("div");
+  item.className = "progress-metric";
+  const name = document.createElement("span");
+  name.textContent = label;
+  const data = document.createElement("strong");
+  data.textContent = value;
+  item.append(name, data);
+  return item;
 }
 
 function renderPlan() {

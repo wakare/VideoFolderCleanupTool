@@ -268,6 +268,97 @@ label textarea {
   margin-bottom: 12px;
 }
 
+.progress-empty {
+  color: var(--muted);
+  padding: 8px 0 2px;
+}
+
+.progress-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.job-item .progress-card {
+  margin-top: 12px;
+}
+
+.progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.progress-header span {
+  color: var(--accent-dark);
+  font-weight: 650;
+}
+
+.progress-bar {
+  height: 10px;
+  border-radius: 999px;
+  background: #e7ebe7;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 200ms ease;
+}
+
+.progress-bar-fill.queued {
+  background: #9aa7a3;
+}
+
+.progress-bar-fill.running {
+  background: var(--accent);
+}
+
+.progress-bar-fill.completed {
+  background: var(--ok);
+}
+
+.progress-bar-fill.failed {
+  background: var(--danger);
+}
+
+.progress-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.progress-metric {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8faf8;
+  padding: 8px;
+}
+
+.progress-metric span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.progress-metric strong {
+  display: block;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+
+.progress-current {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  padding-top: 8px;
+  font-size: 12px;
+}
+
 pre {
   margin: 10px 0 0;
   white-space: pre-wrap;
@@ -432,6 +523,10 @@ td.path-cell {
   .metrics {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
   }
+
+  .progress-grid {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
 }
 
 @media (max-width: 560px) {
@@ -451,7 +546,8 @@ td.path-cell {
   .two-col,
   .split-actions,
   .toolbar,
-  .metrics {
+  .metrics,
+  .progress-grid {
     grid-template-columns: 1fr;
   }
 }
