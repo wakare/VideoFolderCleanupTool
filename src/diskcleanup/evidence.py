@@ -6,10 +6,14 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .db import connect, list_records
 from .fingerprint import hamming64
 from .models import VideoRecord
+
+
+EvidenceProgressCallback = Callable[[dict[str, object]], None]
 
 
 @dataclass(frozen=True)
@@ -263,6 +267,7 @@ def build_evidence_report(
     screenshot_height: int = 360,
     screenshot_timeout: int = 60,
     include_manual: bool = True,
+    progress_callback: EvidenceProgressCallback | None = None,
 ) -> dict[str, object]:
     plan = load_plan(plan_path)
     records = records_by_path(db_path, profile)
@@ -272,8 +277,40 @@ def build_evidence_report(
     relations = relations_from_plan(plan, include_manual=include_manual)
     samples: list[EvidenceSample] = []
     relation_rows: list[dict[str, object]] = []
+    screenshot_ok = 0
 
-    for relation in relations:
+    def publish(update: dict[str, object]) -> None:
+        if progress_callback:
+            progress_callback(update)
+
+    publish(
+        {
+            "phase": "evidence",
+            "total": len(relations),
+            "processed": 0,
+            "relations_total": len(relations),
+            "relation_index": 0,
+            "samples": 0,
+            "screenshot_ok": 0,
+        }
+    )
+
+    for relation_index, relation in enumerate(relations, start=1):
+        publish(
+            {
+                "phase": "evidence",
+                "total": len(relations),
+                "processed": relation_index - 1,
+                "relations_total": len(relations),
+                "relation_index": relation_index,
+                "reason": relation.reason,
+                "candidate": str(relation.candidate),
+                "keeper": str(relation.keeper),
+                "current": f"{relation.candidate} -> {relation.keeper}",
+                "samples": len(samples),
+                "screenshot_ok": screenshot_ok,
+            }
+        )
         candidate_record = records.get(str(relation.candidate))
         keeper_record = records.get(str(relation.keeper))
         relation_rows.append(relation_to_row(relation, candidate_record, keeper_record))
@@ -290,6 +327,18 @@ def build_evidence_report(
                     None,
                     "missing_fingerprint_record",
                 )
+            )
+            publish(
+                {
+                    "phase": "evidence",
+                    "total": len(relations),
+                    "processed": relation_index,
+                    "relation_index": relation_index,
+                    "relations_total": len(relations),
+                    "samples": len(samples),
+                    "screenshot_ok": screenshot_ok,
+                    "current": f"{relation.candidate} -> {relation.keeper}",
+                }
             )
             continue
 
@@ -314,6 +363,18 @@ def build_evidence_report(
                     "no_matching_samples_under_threshold",
                 )
             )
+            publish(
+                {
+                    "phase": "evidence",
+                    "total": len(relations),
+                    "processed": relation_index,
+                    "relation_index": relation_index,
+                    "relations_total": len(relations),
+                    "samples": len(samples),
+                    "screenshot_ok": screenshot_ok,
+                    "current": f"{relation.candidate} -> {relation.keeper}",
+                }
+            )
             continue
 
         candidate_interval = candidate_record.fingerprint_interval or keeper_record.fingerprint_interval or 1.0
@@ -329,6 +390,23 @@ def build_evidence_report(
                     f"{safe_slug(relation.reason)}.jpg"
                 )
                 screenshot_path = screenshot_dir / screenshot_name
+                publish(
+                    {
+                        "phase": "evidence",
+                        "total": len(relations),
+                        "processed": relation_index - 1,
+                        "relation_index": relation_index,
+                        "relations_total": len(relations),
+                        "sample_index": sample_index,
+                        "sample_total": len(pairs),
+                        "samples": len(samples),
+                        "screenshot_ok": screenshot_ok,
+                        "reason": relation.reason,
+                        "candidate": str(relation.candidate),
+                        "keeper": str(relation.keeper),
+                        "current": str(screenshot_path),
+                    }
+                )
                 status = extract_comparison_screenshot(
                     candidate=relation.candidate,
                     keeper=relation.keeper,
@@ -338,6 +416,8 @@ def build_evidence_report(
                     height=screenshot_height,
                     timeout_seconds=screenshot_timeout,
                 )
+                if status == "ok":
+                    screenshot_ok += 1
             samples.append(
                 EvidenceSample(
                     relation.relation_id,
@@ -351,6 +431,39 @@ def build_evidence_report(
                     status,
                 )
             )
+            publish(
+                {
+                    "phase": "evidence",
+                    "total": len(relations),
+                    "processed": relation_index - 1,
+                    "relation_index": relation_index,
+                    "relations_total": len(relations),
+                    "sample_index": sample_index,
+                    "sample_total": len(pairs),
+                    "samples": len(samples),
+                    "screenshot_ok": screenshot_ok,
+                    "reason": relation.reason,
+                    "candidate": str(relation.candidate),
+                    "keeper": str(relation.keeper),
+                    "current": f"{relation.candidate} -> {relation.keeper}",
+                }
+            )
+
+        publish(
+            {
+                "phase": "evidence",
+                "total": len(relations),
+                "processed": relation_index,
+                "relation_index": relation_index,
+                "relations_total": len(relations),
+                "samples": len(samples),
+                "screenshot_ok": screenshot_ok,
+                "reason": relation.reason,
+                "candidate": str(relation.candidate),
+                "keeper": str(relation.keeper),
+                "current": f"{relation.candidate} -> {relation.keeper}",
+            }
+        )
 
     relation_csv = output_dir / "relations.csv"
     sample_csv = output_dir / "evidence-samples.csv"
@@ -369,7 +482,7 @@ def build_evidence_report(
         "relations": len(relations),
         "samples": len(samples),
         "screenshots": screenshots,
-        "screenshot_ok": sum(1 for sample in samples if sample.screenshot_status == "ok"),
+        "screenshot_ok": screenshot_ok,
         "outputs": {
             "markdown": str(markdown_path),
             "relations_csv": str(relation_csv),
@@ -379,6 +492,18 @@ def build_evidence_report(
         },
     }
     json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    publish(
+        {
+            "phase": "completed",
+            "total": len(relations),
+            "processed": len(relations),
+            "relations_total": len(relations),
+            "relation_index": len(relations),
+            "samples": len(samples),
+            "screenshot_ok": screenshot_ok,
+            "current": str(markdown_path),
+        }
+    )
     return summary
 
 

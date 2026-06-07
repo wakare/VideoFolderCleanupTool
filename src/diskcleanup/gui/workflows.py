@@ -441,6 +441,7 @@ def build_evidence(settings: EvidenceSettings, progress: ProgressCallback) -> di
         screenshot_height=settings.screenshot_height,
         screenshot_timeout=settings.screenshot_timeout,
         include_manual=settings.include_manual,
+        progress_callback=lambda update: progress(update, None),
     )
     progress({"phase": "completed"}, "evidence report completed")
     return summary

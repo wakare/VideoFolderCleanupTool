@@ -255,6 +255,9 @@ function progressCard(job) {
     metricLine("ETA", stats.etaLabel),
     metricLine("Profile", progress.profile || job.result?.profile || "n/a"),
     metricLine("Active files", activeFiles(progress).length || "n/a"),
+    metricLine("Relation", stats.relationLabel),
+    metricLine("Sample", stats.sampleLabel),
+    metricLine("Screenshots", stats.screenshotLabel),
   );
 
   const current = document.createElement("div");
@@ -318,6 +321,15 @@ function jobProgressStats(job) {
     elapsedLabel: elapsedSeconds === null ? "n/a" : formatDuration(elapsedSeconds),
     rateLabel: rate ? `${rate.toFixed(3)} files/s` : "n/a",
     etaLabel: etaSeconds === null || !Number.isFinite(etaSeconds) ? "n/a" : formatDuration(etaSeconds),
+    relationLabel: progress.relation_index && progress.relations_total
+      ? `${progress.relation_index} / ${progress.relations_total}${progress.reason ? ` ${progress.reason}` : ""}`
+      : "n/a",
+    sampleLabel: progress.sample_index && progress.sample_total
+      ? `${progress.sample_index} / ${progress.sample_total}`
+      : "n/a",
+    screenshotLabel: progress.screenshot_ok !== undefined
+      ? `${progress.screenshot_ok}${progress.samples !== undefined ? ` / ${progress.samples}` : ""}`
+      : "n/a",
     failed,
   };
 }
