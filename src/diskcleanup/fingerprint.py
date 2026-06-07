@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import math
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Callable
+from typing import Callable, ContextManager
 
 
 FRAME_WIDTH = 9
@@ -111,44 +113,94 @@ def extract_video_fingerprint_seek(
     interval_seconds: float = 30.0,
     max_frames: int | None = None,
     timeout_per_frame_seconds: int | None = 15,
+    seek_workers: int = 1,
+    ffmpeg_semaphore: ContextManager[object] | None = None,
     progress_callback: Callable[[int, int, float, float], None] | None = None,
 ) -> tuple[int, ...]:
     if duration_seconds <= 0:
         raise FingerprintError("duration_seconds must be positive for seek extraction")
     if interval_seconds <= 0:
         raise ValueError("interval_seconds must be positive")
+    if seek_workers <= 0:
+        raise ValueError("seek_workers must be positive")
 
-    frame_count = int(duration_seconds // interval_seconds) + 1
-    if max_frames:
-        frame_count = min(frame_count, max_frames)
+    timestamps = sampled_timestamps(
+        duration_seconds=duration_seconds,
+        interval_seconds=interval_seconds,
+        max_frames=max_frames,
+    )
+    frame_count = len(timestamps)
 
-    hashes: list[int] = []
+    hashes_by_index: dict[int, int] = {}
     failures: list[str] = []
-    for index in range(frame_count):
-        timestamp = index * interval_seconds
+
+    def run_one(index: int, timestamp: float) -> tuple[int, int | None, str | None]:
         if progress_callback:
             progress_callback(index + 1, frame_count, timestamp, duration_seconds)
-        command = [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-ss",
-            f"{timestamp:.3f}",
-            "-i",
-            str(path),
-            "-frames:v",
-            "1",
-            "-vf",
-            f"scale={FRAME_WIDTH}:{FRAME_HEIGHT}:flags=bilinear,format=gray",
-            "-an",
-            "-sn",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "gray",
-            "pipe:1",
-        ]
-        try:
+        return _extract_seek_frame(
+            path,
+            timestamp,
+            timeout_per_frame_seconds=timeout_per_frame_seconds,
+            ffmpeg_semaphore=ffmpeg_semaphore,
+            index=index,
+        )
+
+    if seek_workers == 1:
+        for index, timestamp in enumerate(timestamps):
+            result_index, frame_hash, failure = run_one(index, timestamp)
+            if failure:
+                failures.append(failure)
+            elif frame_hash is not None:
+                hashes_by_index[result_index] = frame_hash
+    else:
+        with ThreadPoolExecutor(max_workers=seek_workers) as executor:
+            futures = [
+                executor.submit(run_one, index, timestamp)
+                for index, timestamp in enumerate(timestamps)
+            ]
+            for future in as_completed(futures):
+                result_index, frame_hash, failure = future.result()
+                if failure:
+                    failures.append(failure)
+                elif frame_hash is not None:
+                    hashes_by_index[result_index] = frame_hash
+
+    if not hashes_by_index:
+        detail = "; ".join(failures[:3])
+        raise FingerprintError(detail or "seek extraction produced no frames")
+    return tuple(hashes_by_index[index] for index in sorted(hashes_by_index))
+
+
+def _extract_seek_frame(
+    path: Path,
+    timestamp: float,
+    *,
+    timeout_per_frame_seconds: int | None,
+    ffmpeg_semaphore: ContextManager[object] | None,
+    index: int,
+) -> tuple[int, int | None, str | None]:
+    command = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-ss",
+        f"{timestamp:.3f}",
+        "-i",
+        str(path),
+        "-frames:v",
+        "1",
+        "-vf",
+        f"scale={FRAME_WIDTH}:{FRAME_HEIGHT}:flags=bilinear,format=gray",
+        "-an",
+        "-sn",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "gray",
+        "pipe:1",
+    ]
+    try:
+        with (ffmpeg_semaphore if ffmpeg_semaphore is not None else nullcontext()):
             completed = subprocess.run(
                 command,
                 check=False,
@@ -156,22 +208,15 @@ def extract_video_fingerprint_seek(
                 stderr=subprocess.PIPE,
                 timeout=timeout_per_frame_seconds,
             )
-        except subprocess.TimeoutExpired:
-            failures.append(f"{timestamp:.3f}s timed out")
-            continue
-        except OSError as exc:
-            raise FingerprintError(f"failed to run ffmpeg: {exc}") from exc
+    except subprocess.TimeoutExpired:
+        return index, None, f"{timestamp:.3f}s timed out"
+    except OSError as exc:
+        raise FingerprintError(f"failed to run ffmpeg: {exc}") from exc
 
-        if completed.returncode != 0 or len(completed.stdout) < FRAME_BYTES:
-            stderr = completed.stderr.decode("utf-8", errors="replace").strip()
-            failures.append(f"{timestamp:.3f}s: {stderr or 'no frame'}")
-            continue
-        hashes.append(dhash_from_gray_9x8(completed.stdout[:FRAME_BYTES]))
-
-    if not hashes:
-        detail = "; ".join(failures[:3])
-        raise FingerprintError(detail or "seek extraction produced no frames")
-    return tuple(hashes)
+    if completed.returncode != 0 or len(completed.stdout) < FRAME_BYTES:
+        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+        return index, None, f"{timestamp:.3f}s: {stderr or 'no frame'}"
+    return index, dhash_from_gray_9x8(completed.stdout[:FRAME_BYTES]), None
 
 
 def sampled_timestamps(

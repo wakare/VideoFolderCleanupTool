@@ -58,6 +58,20 @@ class FingerprintTests(unittest.TestCase):
             (3, 3, 20, 20),
         ])
 
+    def test_seek_extraction_can_run_frames_in_parallel(self):
+        def fake_run(*_args, **_kwargs):
+            return CompletedProcess(args=[], returncode=0, stdout=bytes([0] * FRAME_BYTES), stderr=b"")
+
+        with patch("diskcleanup.fingerprint.subprocess.run", fake_run):
+            hashes = extract_video_fingerprint_seek(
+                Path("video.mp4"),
+                duration_seconds=20,
+                interval_seconds=10,
+                seek_workers=2,
+            )
+
+        self.assertEqual(hashes, (0, 0, 0))
+
     def test_pyav_seek_reports_missing_optional_dependency(self):
         try:
             import av  # noqa: F401

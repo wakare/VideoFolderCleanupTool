@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DiskCleanUp</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="/static/styles.css?v=20260607-evidence-progress" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260607-parallel" />
   </head>
   <body>
     <header class="topbar">
@@ -39,6 +39,16 @@
             <label>
               Workers
               <input id="workers" type="number" min="1" value="4" />
+            </label>
+          </div>
+          <div class="two-col">
+            <label>
+              Seek workers
+              <input id="seekWorkers" type="number" min="1" value="1" />
+            </label>
+            <label>
+              FFmpeg limit
+              <input id="ffmpegWorkers" type="number" min="0" value="0" />
             </label>
           </div>
           <div class="two-col">
@@ -132,6 +142,10 @@
               <input id="screenshotHeight" type="number" min="64" value="360" />
             </label>
           </div>
+          <label>
+            Screenshot workers
+            <input id="screenshotWorkers" type="number" min="1" value="1" />
+          </label>
           <div class="inline-options">
             <label><input id="screenshots" type="checkbox" checked /> Screenshots</label>
             <label><input id="includeManual" type="checkbox" checked /> Manual review</label>
@@ -221,6 +235,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=20260607-evidence-progress"></script>
+    <script src="/static/app.js?v=20260607-parallel"></script>
   </body>
 </html>

@@ -75,6 +75,8 @@ async function submitScan() {
     profile_name: textValue("profileName"),
     hash_mode: textValue("hashMode"),
     workers: numberValue("workers"),
+    seek_workers: numberValue("seekWorkers"),
+    ffmpeg_workers: numberValue("ffmpegWorkers"),
     force: checked("forceScan"),
     prune_missing: checked("pruneMissing"),
   };
@@ -109,6 +111,7 @@ async function submitEvidence() {
     hash_distance: numberValue("hashDistance"),
     screenshots: checked("screenshots"),
     screenshot_height: numberValue("screenshotHeight"),
+    screenshot_workers: numberValue("screenshotWorkers"),
     include_manual: checked("includeManual"),
   };
   const job = await api("/api/evidence", payloadJson(payload));

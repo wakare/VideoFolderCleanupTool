@@ -78,6 +78,12 @@ The report writes:
 
 Screenshot comparisons are enabled by default. Use `--no-screenshots` when the source files are unavailable, already quarantined, or when you only need CSV/Markdown evidence metadata. Use `--max-samples` to control how many frame samples are shown per relation.
 
+For large reports, generate screenshots concurrently:
+
+```powershell
+diskcleanup evidence-report --plan cleanup-plan.json --screenshot-workers 4
+```
+
 ## Matching notes
 
 The default scanner uses continuous FFmpeg sampling and samples one frame every two seconds. This is accurate but slow for large folders because FFmpeg still has to decode through each video.
@@ -85,9 +91,11 @@ The default scanner uses continuous FFmpeg sampling and samples one frame every 
 For 1000+ video batches, use seek-based coarse sampling first:
 
 ```powershell
-diskcleanup scan D:\Videos --fingerprint-mode seek --interval 20 --workers 4 --hash-mode quick
+diskcleanup scan D:\Videos --fingerprint-mode seek --interval 20 --workers 4 --seek-workers 2 --ffmpeg-workers 4 --hash-mode quick
 diskcleanup report --candidate-mode indexed
 ```
+
+`--workers` controls how many videos are scanned concurrently. `--seek-workers` controls how many timestamps inside one video are sampled concurrently in seek mode. `--ffmpeg-workers` caps total concurrent FFmpeg seek processes across the scan; use this to keep CPU and disk pressure predictable.
 
 If PyAV is installed, the optional PyAV seek backend can avoid starting one FFmpeg process per sampled frame:
 

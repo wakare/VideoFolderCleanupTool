@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from diskcleanup.evidence import (
     build_evidence_report,
@@ -169,6 +170,63 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(progress[-1]["phase"], "completed")
             self.assertEqual(progress[-1]["processed"], 1)
             self.assertEqual(progress[-1]["samples"], 2)
+
+    def test_build_evidence_report_can_generate_screenshots_in_parallel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "cache.sqlite"
+            plan_path = root / "plan.json"
+            output_dir = root / "evidence"
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            third = root / "third.mp4"
+            connection = connect(db_path)
+            upsert_record(connection, record(str(first), (10, 20, 30)))
+            upsert_record(connection, record(str(second), (10, 20, 30)))
+            upsert_record(connection, record(str(third), (10, 20, 30)))
+            connection.commit()
+            connection.close()
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "reason": "near_duplicate",
+                                "victim": str(first),
+                                "keeper": str(second),
+                                "confidence": 1.0,
+                            },
+                            {
+                                "reason": "near_duplicate",
+                                "victim": str(third),
+                                "keeper": str(second),
+                                "confidence": 1.0,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            progress = []
+
+            with patch("diskcleanup.evidence.extract_comparison_screenshot", return_value="ok") as extract:
+                summary = build_evidence_report(
+                    plan_path=plan_path,
+                    db_path=db_path,
+                    profile=None,
+                    output_dir=output_dir,
+                    title="Evidence",
+                    max_samples=1,
+                    screenshots=True,
+                    screenshot_workers=2,
+                    progress_callback=lambda update: progress.append(update),
+                )
+
+            self.assertEqual(summary["relations"], 2)
+            self.assertEqual(summary["samples"], 2)
+            self.assertEqual(summary["screenshot_ok"], 2)
+            self.assertEqual(extract.call_count, 2)
+            self.assertTrue(any(update["phase"] == "screenshots" for update in progress))
 
 
 if __name__ == "__main__":

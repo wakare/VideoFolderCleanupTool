@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 from typing import Iterable
 
 from ..cli import (
@@ -42,6 +42,8 @@ class ScanSettings:
     hash_mode: str = "quick"
     skip_sha256: bool = False
     workers: int = 4
+    seek_workers: int = 1
+    ffmpeg_workers: int = 0
     probe_timeout: int | None = 60
     fingerprint_timeout: int | None = None
     seek_timeout: int | None = 15
@@ -75,6 +77,7 @@ class EvidenceSettings:
     screenshots: bool = True
     screenshot_height: int = 360
     screenshot_timeout: int = 60
+    screenshot_workers: int = 1
     include_manual: bool = True
 
 
@@ -169,6 +172,8 @@ def scan_settings_from_payload(payload: dict[str, object]) -> ScanSettings:
         hash_mode=hash_mode,
         skip_sha256=parse_bool(payload.get("skip_sha256"), False),
         workers=parse_int(payload.get("workers"), 4, minimum=1),
+        seek_workers=parse_int(payload.get("seek_workers"), 1, minimum=1),
+        ffmpeg_workers=parse_int(payload.get("ffmpeg_workers"), 0, minimum=0),
         probe_timeout=parse_int(payload.get("probe_timeout"), 60, minimum=1),
         fingerprint_timeout=(
             None
@@ -211,6 +216,7 @@ def evidence_settings_from_payload(payload: dict[str, object]) -> EvidenceSettin
         screenshots=parse_bool(payload.get("screenshots"), True),
         screenshot_height=parse_int(payload.get("screenshot_height"), 360, minimum=16),
         screenshot_timeout=parse_int(payload.get("screenshot_timeout"), 60, minimum=1),
+        screenshot_workers=parse_int(payload.get("screenshot_workers"), 1, minimum=1),
         include_manual=parse_bool(payload.get("include_manual"), True),
     )
 
@@ -241,6 +247,10 @@ def scan_videos(settings: ScanSettings, progress: ProgressCallback) -> dict[str,
     jobs: list[tuple[Path, Path, object]] = []
     active_files: dict[str, dict[str, object]] = {}
     active_lock = Lock()
+    ffmpeg_workers = settings.ffmpeg_workers or (
+        max(settings.workers, settings.seek_workers) if settings.seek_workers > 1 else 0
+    )
+    ffmpeg_semaphore = BoundedSemaphore(ffmpeg_workers) if ffmpeg_workers > 0 else None
 
     progress({"phase": "indexing", "scanned": 0, "failed": 0, "skipped": 0}, "indexing videos")
     try:
@@ -336,6 +346,8 @@ def scan_videos(settings: ScanSettings, progress: ProgressCallback) -> dict[str,
             "fingerprint_timeout": settings.fingerprint_timeout,
             "fingerprint_mode": settings.fingerprint_mode,
             "seek_timeout": settings.seek_timeout,
+            "seek_workers": settings.seek_workers,
+            "ffmpeg_semaphore": ffmpeg_semaphore,
         }
 
         if settings.workers <= 1:
@@ -440,6 +452,7 @@ def build_evidence(settings: EvidenceSettings, progress: ProgressCallback) -> di
         screenshots=settings.screenshots,
         screenshot_height=settings.screenshot_height,
         screenshot_timeout=settings.screenshot_timeout,
+        screenshot_workers=settings.screenshot_workers,
         include_manual=settings.include_manual,
         progress_callback=lambda update: progress(update, None),
     )

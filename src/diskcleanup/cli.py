@@ -5,7 +5,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import sys
 from pathlib import Path
-from typing import Callable
+from threading import BoundedSemaphore
+from typing import Callable, ContextManager
 
 from . import __version__
 from .db import connect, get_record, list_profiles, list_records, remove_missing_records, upsert_record
@@ -32,6 +33,13 @@ def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+def non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
     return parsed
 
 
@@ -114,6 +122,8 @@ def scan_one_video(
     fingerprint_timeout: int | None,
     fingerprint_mode: str,
     seek_timeout: int | None,
+    seek_workers: int = 1,
+    ffmpeg_semaphore: ContextManager[object] | None = None,
     progress_callback: Callable[[Path, dict[str, object]], None] | None = None,
 ) -> VideoRecord:
     stat = path.stat()
@@ -171,6 +181,8 @@ def scan_one_video(
                 interval_seconds=interval,
                 max_frames=max_frames or None,
                 timeout_per_frame_seconds=seek_timeout,
+                seek_workers=seek_workers,
+                ffmpeg_semaphore=ffmpeg_semaphore,
                 progress_callback=seek_progress,
             )
         elif fingerprint_mode == "pyav-seek":
@@ -227,6 +239,8 @@ def scan_command(args: argparse.Namespace) -> int:
     needs_sha256 = args.hash_mode == "sha256" and not args.skip_sha256
     needs_quick_hash = args.hash_mode != "none"
     jobs: list[tuple[Path, Path, VideoRecord | None]] = []
+    ffmpeg_workers = args.ffmpeg_workers or (max(args.workers, args.seek_workers) if args.seek_workers > 1 else 0)
+    ffmpeg_semaphore = BoundedSemaphore(ffmpeg_workers) if ffmpeg_workers > 0 else None
 
     for path in iter_video_files(roots, extensions):
         stat = path.stat()
@@ -267,6 +281,8 @@ def scan_command(args: argparse.Namespace) -> int:
         "fingerprint_timeout": args.fingerprint_timeout,
         "fingerprint_mode": args.fingerprint_mode,
         "seek_timeout": args.seek_timeout,
+        "seek_workers": args.seek_workers,
+        "ffmpeg_semaphore": ffmpeg_semaphore,
     }
 
     if args.workers <= 1:
@@ -429,6 +445,7 @@ def evidence_report_command(args: argparse.Namespace) -> int:
         screenshots=args.screenshots,
         screenshot_height=args.screenshot_height,
         screenshot_timeout=args.screenshot_timeout,
+        screenshot_workers=args.screenshot_workers,
         include_manual=args.include_manual,
     )
     outputs = summary["outputs"]
@@ -463,6 +480,13 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--hash-mode", choices=["quick", "sha256", "none"], default="quick")
     scan.add_argument("--skip-sha256", action="store_true", help="deprecated alias to suppress full SHA256")
     scan.add_argument("--workers", type=positive_int, default=1, help="number of videos to scan concurrently")
+    scan.add_argument("--seek-workers", type=positive_int, default=1, help="parallel ffmpeg seeks per video in seek mode")
+    scan.add_argument(
+        "--ffmpeg-workers",
+        type=non_negative_int,
+        default=0,
+        help="global ffmpeg process limit for seek scanning; 0 auto-limits when --seek-workers > 1",
+    )
     scan.add_argument("--probe-timeout", type=int, default=60)
     scan.add_argument("--fingerprint-timeout", type=int, default=None)
     scan.add_argument("--seek-timeout", type=int, default=15, help="timeout per sampled frame in seek mode")
@@ -525,6 +549,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evidence.add_argument("--screenshot-height", type=positive_int, default=360)
     evidence.add_argument("--screenshot-timeout", type=positive_int, default=60)
+    evidence.add_argument("--screenshot-workers", type=positive_int, default=1)
     manual_group = evidence.add_mutually_exclusive_group()
     manual_group.add_argument(
         "--include-manual",

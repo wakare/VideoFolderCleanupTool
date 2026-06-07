@@ -4,7 +4,8 @@ import csv
 import json
 import re
 import subprocess
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -39,6 +40,21 @@ class EvidenceSample:
     hamming_distance: int | None
     screenshot: Path | None
     screenshot_status: str
+
+
+@dataclass(frozen=True)
+class ScreenshotJob:
+    sample_position: int
+    relation_index: int
+    relations_total: int
+    sample_index: int
+    sample_total: int
+    reason: str
+    candidate: Path
+    keeper: Path
+    candidate_seconds: float
+    keeper_seconds: float
+    output: Path
 
 
 def format_timestamp(seconds: float | None) -> str:
@@ -173,6 +189,8 @@ def pick_evidence_pairs(
 
     if len(matches) <= max_samples:
         return matches
+    if max_samples == 1:
+        return [matches[len(matches) // 2]]
 
     selected: list[tuple[int, int, int]] = []
     used: set[int] = set()
@@ -266,9 +284,13 @@ def build_evidence_report(
     screenshots: bool = True,
     screenshot_height: int = 360,
     screenshot_timeout: int = 60,
+    screenshot_workers: int = 1,
     include_manual: bool = True,
     progress_callback: EvidenceProgressCallback | None = None,
 ) -> dict[str, object]:
+    if screenshot_workers <= 0:
+        raise ValueError("screenshot_workers must be positive")
+
     plan = load_plan(plan_path)
     records = records_by_path(db_path, profile)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -276,6 +298,7 @@ def build_evidence_report(
 
     relations = relations_from_plan(plan, include_manual=include_manual)
     samples: list[EvidenceSample] = []
+    screenshot_jobs: list[ScreenshotJob] = []
     relation_rows: list[dict[str, object]] = []
     screenshot_ok = 0
 
@@ -390,34 +413,22 @@ def build_evidence_report(
                     f"{safe_slug(relation.reason)}.jpg"
                 )
                 screenshot_path = screenshot_dir / screenshot_name
-                publish(
-                    {
-                        "phase": "evidence",
-                        "total": len(relations),
-                        "processed": relation_index - 1,
-                        "relation_index": relation_index,
-                        "relations_total": len(relations),
-                        "sample_index": sample_index,
-                        "sample_total": len(pairs),
-                        "samples": len(samples),
-                        "screenshot_ok": screenshot_ok,
-                        "reason": relation.reason,
-                        "candidate": str(relation.candidate),
-                        "keeper": str(relation.keeper),
-                        "current": str(screenshot_path),
-                    }
+                status = "screenshot_pending"
+                screenshot_jobs.append(
+                    ScreenshotJob(
+                        sample_position=len(samples),
+                        relation_index=relation_index,
+                        relations_total=len(relations),
+                        sample_index=sample_index,
+                        sample_total=len(pairs),
+                        reason=relation.reason,
+                        candidate=relation.candidate,
+                        keeper=relation.keeper,
+                        candidate_seconds=candidate_seconds,
+                        keeper_seconds=keeper_seconds,
+                        output=screenshot_path,
+                    )
                 )
-                status = extract_comparison_screenshot(
-                    candidate=relation.candidate,
-                    keeper=relation.keeper,
-                    candidate_seconds=candidate_seconds,
-                    keeper_seconds=keeper_seconds,
-                    output=screenshot_path,
-                    height=screenshot_height,
-                    timeout_seconds=screenshot_timeout,
-                )
-                if status == "ok":
-                    screenshot_ok += 1
             samples.append(
                 EvidenceSample(
                     relation.relation_id,
@@ -465,6 +476,58 @@ def build_evidence_report(
             }
         )
 
+    if screenshot_jobs:
+        publish(
+            {
+                "phase": "screenshots",
+                "total": len(screenshot_jobs),
+                "processed": 0,
+                "relations_total": len(relations),
+                "samples": len(samples),
+                "screenshot_ok": 0,
+            }
+        )
+
+        def run_screenshot(job: ScreenshotJob) -> tuple[ScreenshotJob, str]:
+            status = extract_comparison_screenshot(
+                candidate=job.candidate,
+                keeper=job.keeper,
+                candidate_seconds=job.candidate_seconds,
+                keeper_seconds=job.keeper_seconds,
+                output=job.output,
+                height=screenshot_height,
+                timeout_seconds=screenshot_timeout,
+            )
+            return job, status
+
+        screenshot_done = 0
+        if screenshot_workers == 1:
+            for job in screenshot_jobs:
+                    completed_job, status = run_screenshot(job)
+                    screenshot_done, screenshot_ok = update_screenshot_sample(
+                        samples,
+                        completed_job,
+                        status,
+                        screenshot_done,
+                        screenshot_ok,
+                        len(screenshot_jobs),
+                        publish,
+                    )
+        else:
+            with ThreadPoolExecutor(max_workers=screenshot_workers) as executor:
+                futures = [executor.submit(run_screenshot, job) for job in screenshot_jobs]
+                for future in as_completed(futures):
+                    completed_job, status = future.result()
+                    screenshot_done, screenshot_ok = update_screenshot_sample(
+                        samples,
+                        completed_job,
+                        status,
+                        screenshot_done,
+                        screenshot_ok,
+                        len(screenshot_jobs),
+                        publish,
+                    )
+
     relation_csv = output_dir / "relations.csv"
     sample_csv = output_dir / "evidence-samples.csv"
     markdown_path = output_dir / "report.md"
@@ -505,6 +568,39 @@ def build_evidence_report(
         }
     )
     return summary
+
+
+def update_screenshot_sample(
+    samples: list[EvidenceSample],
+    job: ScreenshotJob,
+    status: str,
+    screenshot_done: int,
+    screenshot_ok: int,
+    screenshot_total: int,
+    publish: EvidenceProgressCallback,
+) -> tuple[int, int]:
+    samples[job.sample_position] = replace(samples[job.sample_position], screenshot_status=status)
+    screenshot_done += 1
+    if status == "ok":
+        screenshot_ok += 1
+    publish(
+        {
+            "phase": "screenshots",
+            "total": screenshot_total,
+            "processed": screenshot_done,
+            "relation_index": job.relation_index,
+            "relations_total": job.relations_total,
+            "sample_index": job.sample_index,
+            "sample_total": job.sample_total,
+            "samples": len(samples),
+            "screenshot_ok": screenshot_ok,
+            "reason": job.reason,
+            "candidate": str(job.candidate),
+            "keeper": str(job.keeper),
+            "current": str(job.output),
+        }
+    )
+    return screenshot_done, screenshot_ok
 
 
 def relation_to_row(
