@@ -254,14 +254,44 @@ function progressCard(job) {
     metricLine("Avg speed", stats.rateLabel),
     metricLine("ETA", stats.etaLabel),
     metricLine("Profile", progress.profile || job.result?.profile || "n/a"),
+    metricLine("Active files", activeFiles(progress).length || "n/a"),
   );
 
   const current = document.createElement("div");
   current.className = "progress-current path-text";
-  current.textContent = progress.current ? `Current: ${progress.current}` : "Current: n/a";
+  const active = activeFiles(progress);
+  if (active.length) {
+    current.append(...active.map(activeFileLine));
+  } else if (progress.current) {
+    current.textContent = `Current: ${progress.current}`;
+  } else if (progress.last_completed) {
+    current.textContent = `Last completed: ${progress.last_completed}`;
+  } else {
+    current.textContent = "Current: n/a";
+  }
 
   card.append(header, bar, grid, current);
   return card;
+}
+
+function activeFiles(progress) {
+  return Array.isArray(progress.active_files) ? progress.active_files : [];
+}
+
+function activeFileLine(file) {
+  const line = document.createElement("div");
+  const parts = [`Current: ${file.path || "unknown"}`];
+  if (file.sample_index && file.sample_total) {
+    parts.push(`sample ${file.sample_index}/${file.sample_total}`);
+  }
+  if (file.timestamp_seconds !== undefined && file.duration_seconds !== undefined) {
+    parts.push(`${formatTimestamp(file.timestamp_seconds)} / ${formatTimestamp(file.duration_seconds)}`);
+  }
+  if (file.phase) {
+    parts.push(file.phase);
+  }
+  line.textContent = parts.join(" | ");
+  return line;
 }
 
 function jobProgressStats(job) {
@@ -290,6 +320,17 @@ function jobProgressStats(job) {
     etaLabel: etaSeconds === null || !Number.isFinite(etaSeconds) ? "n/a" : formatDuration(etaSeconds),
     failed,
   };
+}
+
+function formatTimestamp(seconds) {
+  const rounded = Math.max(0, Math.round(Number(seconds) || 0));
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const secs = rounded % 60;
+  if (hours) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(secs).padStart(2, "0")}`;
 }
 
 function numeric(value) {

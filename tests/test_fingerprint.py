@@ -1,11 +1,14 @@
 import unittest
 
 from pathlib import Path
+from subprocess import CompletedProcess
+from unittest.mock import patch
 
 from diskcleanup.fingerprint import (
     FRAME_BYTES,
     FingerprintError,
     dhash_from_gray_9x8,
+    extract_video_fingerprint_seek,
     extract_video_fingerprint_pyav_seek,
     fingerprint_from_raw_frames,
     hamming64,
@@ -33,6 +36,27 @@ class FingerprintTests(unittest.TestCase):
             sampled_timestamps(duration_seconds=100, interval_seconds=30, max_frames=3),
             [0, 30, 60],
         )
+
+    def test_seek_extraction_reports_sample_progress(self):
+        progress = []
+
+        def fake_run(*_args, **_kwargs):
+            return CompletedProcess(args=[], returncode=0, stdout=bytes([0] * FRAME_BYTES), stderr=b"")
+
+        with patch("diskcleanup.fingerprint.subprocess.run", fake_run):
+            hashes = extract_video_fingerprint_seek(
+                Path("video.mp4"),
+                duration_seconds=20,
+                interval_seconds=10,
+                progress_callback=lambda *args: progress.append(args),
+            )
+
+        self.assertEqual(len(hashes), 3)
+        self.assertEqual(progress, [
+            (1, 3, 0, 20),
+            (2, 3, 10, 20),
+            (3, 3, 20, 20),
+        ])
 
     def test_pyav_seek_reports_missing_optional_dependency(self):
         try:

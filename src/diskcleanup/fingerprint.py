@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import subprocess
 from pathlib import Path
+from typing import Callable
 
 
 FRAME_WIDTH = 9
@@ -110,6 +111,7 @@ def extract_video_fingerprint_seek(
     interval_seconds: float = 30.0,
     max_frames: int | None = None,
     timeout_per_frame_seconds: int | None = 15,
+    progress_callback: Callable[[int, int, float, float], None] | None = None,
 ) -> tuple[int, ...]:
     if duration_seconds <= 0:
         raise FingerprintError("duration_seconds must be positive for seek extraction")
@@ -124,6 +126,8 @@ def extract_video_fingerprint_seek(
     failures: list[str] = []
     for index in range(frame_count):
         timestamp = index * interval_seconds
+        if progress_callback:
+            progress_callback(index + 1, frame_count, timestamp, duration_seconds)
         command = [
             "ffmpeg",
             "-v",

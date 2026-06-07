@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import sys
 from pathlib import Path
+from typing import Callable
 
 from . import __version__
 from .db import connect, get_record, list_profiles, list_records, remove_missing_records, upsert_record
@@ -113,6 +114,7 @@ def scan_one_video(
     fingerprint_timeout: int | None,
     fingerprint_mode: str,
     seek_timeout: int | None,
+    progress_callback: Callable[[Path, dict[str, object]], None] | None = None,
 ) -> VideoRecord:
     stat = path.stat()
     can_reuse = existing is not None and existing.size == stat.st_size and existing.mtime_ns == stat.st_mtime_ns
@@ -144,12 +146,32 @@ def scan_one_video(
             duration = metadata.get("duration")
             if not isinstance(duration, (int, float)):
                 raise FingerprintError("ffprobe did not return a duration for seek extraction")
+
+            def seek_progress(
+                sample_index: int,
+                sample_total: int,
+                timestamp: float,
+                duration_seconds: float,
+            ) -> None:
+                if progress_callback:
+                    progress_callback(
+                        path,
+                        {
+                            "phase": "fingerprinting",
+                            "sample_index": sample_index,
+                            "sample_total": sample_total,
+                            "timestamp_seconds": round(timestamp, 3),
+                            "duration_seconds": round(duration_seconds, 3),
+                        },
+                    )
+
             fingerprint = extract_video_fingerprint_seek(
                 path,
                 duration_seconds=float(duration),
                 interval_seconds=interval,
                 max_frames=max_frames or None,
                 timeout_per_frame_seconds=seek_timeout,
+                progress_callback=seek_progress,
             )
         elif fingerprint_mode == "pyav-seek":
             duration = metadata.get("duration")

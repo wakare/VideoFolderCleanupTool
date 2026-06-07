@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Iterable
 
 from ..cli import (
@@ -238,6 +239,8 @@ def scan_videos(settings: ScanSettings, progress: ProgressCallback) -> dict[str,
     needs_sha256 = settings.hash_mode == "sha256" and not settings.skip_sha256
     needs_quick_hash = settings.hash_mode != "none"
     jobs: list[tuple[Path, Path, object]] = []
+    active_files: dict[str, dict[str, object]] = {}
+    active_lock = Lock()
 
     progress({"phase": "indexing", "scanned": 0, "failed": 0, "skipped": 0}, "indexing videos")
     try:
@@ -264,6 +267,46 @@ def scan_videos(settings: ScanSettings, progress: ProgressCallback) -> dict[str,
             f"queued {total} videos",
         )
 
+        def publish_active(path: Path, details: dict[str, object] | None = None) -> None:
+            active_key = str(path)
+            with active_lock:
+                active_files[active_key] = {
+                    "path": active_key,
+                    **(details or {"phase": "starting"}),
+                }
+                snapshot = list(active_files.values())
+            progress(
+                {
+                    "phase": "scanning",
+                    "total": total,
+                    "scanned": scanned,
+                    "failed": failed,
+                    "skipped": skipped,
+                    "current": active_key,
+                    "active_files": snapshot,
+                },
+                None,
+            )
+
+        def clear_active(path: Path) -> None:
+            with active_lock:
+                active_files.pop(str(path), None)
+                snapshot = list(active_files.values())
+            progress({"active_files": snapshot}, None)
+
+        def scan_with_progress(path: Path, root: Path, existing: object):
+            publish_active(path)
+            try:
+                return scan_one_video(
+                    path,
+                    root,
+                    existing=existing,
+                    **scan_kwargs,
+                    progress_callback=publish_active,
+                )
+            finally:
+                clear_active(path)
+
         def persist(record) -> None:
             nonlocal scanned, failed
             if record.error:
@@ -278,7 +321,7 @@ def scan_videos(settings: ScanSettings, progress: ProgressCallback) -> dict[str,
                     "scanned": scanned,
                     "failed": failed,
                     "skipped": skipped,
-                    "current": str(record.path),
+                    "last_completed": str(record.path),
                 },
                 None,
             )
@@ -297,11 +340,11 @@ def scan_videos(settings: ScanSettings, progress: ProgressCallback) -> dict[str,
 
         if settings.workers <= 1:
             for path, root, existing in jobs:
-                persist(scan_one_video(path, root, existing=existing, **scan_kwargs))
+                persist(scan_with_progress(path, root, existing))
         else:
             with ThreadPoolExecutor(max_workers=settings.workers) as executor:
                 futures = [
-                    executor.submit(scan_one_video, path, root, existing=existing, **scan_kwargs)
+                    executor.submit(scan_with_progress, path, root, existing)
                     for path, root, existing in jobs
                 ]
                 for future in as_completed(futures):
